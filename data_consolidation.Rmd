@@ -1,0 +1,195 @@
+---
+title: "Data Consolidation"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-04-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(dplyr)
+```
+
+Functions
+```{r}
+# Read TXT data file from Air Resources Board
+# handles removal of metadata at end of sheet
+read_arb_txt = function(my.folder, filename){
+  filepath = paste0(my.folder, filename)
+  lines = readLines(filepath)
+  excl.line = grep("^\\s*Quality Flag Definition", lines) # line index to start excluding rows from
+  data.lines = if (length(excl.line) > 0) lines[1:(excl.line - 1)] else lines
+  
+  #output
+  read.csv(text = data.lines, na.strings = c(""), strip.white = TRUE) |> as_tibble()
+}
+```
+
+
+## **PM2.5**
+
+```{r}
+my.pol = c("PM25", "NO2", "SO2")
+my.folder = "data/ARB Monitoring Stations/"
+
+filenames = list.files(my.folder)
+dat.filenames = filenames[!str_detect(filenames, "site_info") & str_detect(filenames, "PM25")]
+
+pm25.info = read_arb_txt(my.folder, "PM25_site_info.txt")
+pm25.davg = purrr::map_dfr(dat.filenames, ~ read_arb_txt(my.folder, .x))
+
+pm25.aavg.all = pm25.davg |> # all rows including those with NA site info
+  mutate(
+    summary_date = as.Date(summary_date),
+    year = year(summary_date)) |> 
+  group_by(site, year) |> 
+  summarize(pm25_aavg = mean(pm25_davg, na.rm = TRUE), .groups = "drop") |> 
+  left_join(pm25.info, by = "site")
+
+pm25.aavg = pm25.aavg.all |> 
+  filter(!is.na(name))
+```
+
+Visualizing 
+```{r}
+library(maps)
+states.map = map_data("state")
+ca.map = states.map |> filter(region == "california")
+
+pm25.aavg |> 
+  ggplot(aes(x = pm25_aavg)) +
+  geom_histogram(fill = "indianred", color = "black", alpha = 0.5) +
+  labs(
+    title = "PM2.5 Annual Averages (2015-2023)",
+    subtitle = "California Air Resources Board",
+    x = "Annual Average PM2.5 (ug/m3)",
+    y = "Count"
+  ) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"))
+
+pm25.aavg |> 
+  ggplot(aes(x = longitude, y = latitude, color = pm25_aavg)) +
+  geom_polygon(data = ca.map, aes(x = long, y = lat, group = group), 
+               fill = "grey95", color = "grey", alpha = 0.6) +
+  geom_point() +
+  scale_color_gradient(low = "darkslateblue", high = "indianred") +
+  labs(
+    title = "PM2.5 Monitoring Sites (2015-2023)",
+    subtitle = "California Air Resources Board",
+    x = "Latitude",
+    y = "Longitude",
+    color = "PM2.5 Annual\nAverage (ug/m3)"
+  ) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"))
+```
+
+
+```{r}
+# List of all TRI filenames
+tri.filenames = list.files("data/TRI", full.names = TRUE)
+
+# Combine files into one dataset and clean
+tri.all = map_dfr(tri.filenames, ~ {read_csv(.x)}) |> 
+  janitor::clean_names() |> 
+  suppressMessages()
+```
+
+Visualizations
+
+```{r}
+tri.all |> 
+  colnames()
+
+
+ggplot(tri.all, aes(x = log1p(x107_total_releases))) +
+  geom_histogram(bins = 50, fill = "steelblue", color = "black", alpha = 0.5) +
+  labs(title = "Distribution of Total TRI Releases (log scale)",
+       subtitle = "EPA Toxics Release Inventory",
+       x = "Log(Total Releases + 1)",
+       y = "Number of Facilities") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"))
+
+tri.all |> 
+  filter(x1_year == 2023) |> 
+  arrange(x107_total_releases) |> 
+  ggplot(aes(x = x13_longitude, y = x12_latitude, color = log1p(x107_total_releases))) +
+  geom_polygon(data = ca.map, aes(x = long, y = lat, group = group), 
+               fill = "grey95", color = "grey", alpha = 0.6) +
+  geom_point(alpha = 0.7) +
+  scale_color_viridis_c(option = "viridis", direction = -1) +
+  labs(title = "Facility Locations Colored by Total TRI Releases (2023)",
+       subtitle = "EPA Toxics Release Inventory",
+       color = "Log(Total\nReleases + 1)",
+       x = "",
+       y = "") +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"))
+
+```
+
+
+## **Hospital Data**
+```{r}
+hosp = read_csv("data/2016-2023-imi-results-long-view.csv", na = c(" ", ".")) |> 
+  janitor::clean_names()
+
+hosp |> 
+  select(hospital) |> 
+  filter(hospital != "STATEWIDE") |> 
+  n_distinct()
+
+hosp |> colnames()
+```
+
+
+```{r}
+hosp$procedure_condition |> unique()
+
+hosp |>
+  filter(procedure_condition %in% c("AMI", "Heart Failure"))|> 
+  ggplot(aes(x = risk_adjuested_mortality_rate)) +
+  geom_histogram(fill = "orange", color = "black", alpha = 0.5) +
+  labs(
+    title = "Mortality Rates for Cardiovascular Admissions (2016-2023)",
+    subtitle = "California Health and Human Services Open Data Portal",
+    x = "Risk Adjusted Mortality Rate",
+    y = "Count"
+  ) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"))
+
+hosp$latitude
+
+hosp |> 
+  filter(year == 2023) |> 
+  arrange(risk_adjuested_mortality_rate) |> 
+  mutate(across(c(longitude, latitude), as.numeric)) |> 
+  ggplot(aes(x = longitude, y = latitude, color = risk_adjuested_mortality_rate)) +
+  geom_polygon(data = ca.map, aes(x = long, y = lat, group = group), 
+               fill = "grey95", color = "grey", alpha = 0.6) +
+  geom_point() +
+  scale_color_gradient(low = "darkslateblue", high = "indianred") +
+  labs(
+    title = "PM2.5 Monitoring Sites (2015-2023)",
+    subtitle = "California Air Resources Board",
+    x = "Latitude",
+    y = "Longitude",
+    color = "PM2.5 Annual\nAverage (ug/m3)"
+  ) +
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"))
+```
+
+
+

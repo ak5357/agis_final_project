@@ -1,0 +1,75 @@
+---
+title: "Air Pollution Data Scraping"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-04-23"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(httr)
+library(rvest)
+library(dplyr)
+library(lubridate)
+library(purrr)
+library(tidyverse)
+```
+
+The following code downloads daily average PM2.5 data from several monitoring sites across California. The data is sourced from the [Air Quality Data (PST) Query Tool](https://www.arb.ca.gov/aqmis2/aqdselect.php). Since the data files are only available for 7-day ranges, the iterative process below allows the automation of this process.
+
+```{r eval = FALSE}
+start_date = as.Date("2015-01-01")
+end_date = as.Date("2023-12-31")
+date_seq = seq(start_date, end_date, by = "7 days")
+my.pol = c("PM25", "NO2", "SO2")
+my.unit = c("001", "007", "007")
+my.folder = "data/ARB Monitoring Stations/"
+
+i.min = 1
+i.max = length(date_seq)
+
+for(i in i.min:i.max){
+  # Set iterative variables
+  date.i = date_seq[i]
+  year.i = year(date.i)
+  month.i = month(date.i)
+  day.i = day(date.i)
+  
+  # Construct URL to download txt data file
+  url.i = paste0("https://www.arb.ca.gov/aqmis2/display.php?download=y&", 
+                 "param=", my.pol,
+                 "&units=","001",
+                 "&statistic=DAVG&",
+                 "year=", year.i,
+                 "&mon=", month.i,
+                 "&day=", day.i,
+                 "&county_name=--COUNTY--&basin=--AIR+BASIN--&latitude=A-Whole+State&report=7DAY&order=county_name%2Cname&submit=Retrieve+Data&ptype=aqd&std15=")
+  
+  # Name file by pollutant and date
+  filename.i = paste0(my.folder, my.pol, "_", year.i, "_", sprintf("%02d", month.i), "_", sprintf("%02d", day.i), ".txt")
+  
+  # Download file
+  message("Downloading: ", filename.i)
+  tryCatch({
+    download.file(url.i, destfile = filename.i, mode = "wb", quiet = TRUE)
+  }, error = function(e) {
+    warning("Failed to download for date: ", date.i)
+  })
+  
+  # Pause between downloads
+  Sys.sleep(1)
+}
+```
+
+
+
+
+
+
+
+
+
+
