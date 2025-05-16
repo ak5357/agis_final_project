@@ -50,6 +50,10 @@ pm25.aavg.all = pm25.davg |> # all rows including those with NA site info
 
 pm25.aavg = pm25.aavg.all |> 
   filter(!is.na(name))
+
+pm25.aavg$site |> unique() |> length()
+pm25.aavg.all$site |> unique() |> length()
+
 ```
 
 Visualizing 
@@ -105,6 +109,8 @@ Visualizations
 ```{r}
 tri.all |> 
   colnames()
+
+tri.all$x4_facility_name |> unique() |> length()
 
 
 ggplot(tri.all, aes(x = log1p(x107_total_releases))) +
@@ -172,19 +178,20 @@ hosp$latitude
 
 hosp |> 
   filter(year == 2023) |> 
+  drop_na() |> 
   arrange(risk_adjuested_mortality_rate) |> 
   mutate(across(c(longitude, latitude), as.numeric)) |> 
   ggplot(aes(x = longitude, y = latitude, color = risk_adjuested_mortality_rate)) +
   geom_polygon(data = ca.map, aes(x = long, y = lat, group = group), 
                fill = "grey95", color = "grey", alpha = 0.6) +
   geom_point() +
-  scale_color_gradient(low = "darkslateblue", high = "indianred") +
+  scale_color_gradient(low = "lightyellow", high = "darkred") +
   labs(
-    title = "PM2.5 Monitoring Sites (2015-2023)",
-    subtitle = "California Air Resources Board",
+    title = "Mortality Rates for Cardiovascular Admissions (2023)",
+    subtitle = "California Health and Human Services Open Data Portal",
     x = "Latitude",
     y = "Longitude",
-    color = "PM2.5 Annual\nAverage (ug/m3)"
+    color = "Risk Adjusted\nMortality Rate"
   ) +
   theme_classic() +
   theme(plot.title = element_text(hjust = 0.5, face = "bold"),

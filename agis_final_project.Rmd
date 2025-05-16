@@ -1,0 +1,777 @@
+---
+title: "Advanced GIS Final Project"
+author: "Arghya Kannadaguli (ak5357)"
+date: "2025-05-11"
+output: 
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_float: yes
+    code_folding: hide
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+setwd("G:/My Drive/_Columbia/Advanced GIS/agis_final_project")
+library(tidyverse)
+library(dplyr)
+library(tigris)
+library(sf)
+library(ggplot2)
+library(gstat)
+library(spdep)
+library(sp)
+library(spgwr)
+library(maps)
+library(gtsummary)
+library(gt)
+library(tigris)
+options(tigris_use_cache = TRUE)
+
+theme_set(
+  theme_classic() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, face = "italic"),
+        plot.caption = element_text(hjust = 0.5))) |> 
+  suppressWarnings()
+```
+
+## **Data Import, Clean, and EDA**
+
+```{r}
+# Import Data
+enviro = read_csv("data/AGIS Final Dataset.csv") |> 
+  select(geo_id, city, california_county, latitude, longitude, 
+         drinking_water, low_birth_weight, 
+         total_birth_pop, total_birth_count, birthing_rate, avg_birthing_age, 
+         female_employment_rate, unemployment_rate, health_insurance_coverage, 
+         poverty_rate_families, poverty_rate_all, residence_over_1y, 
+         edu_less_than_hs, edu_some_hs, edu_hs, edu_some_college, edu_associate, edu_bachelors, edu_grad_prof,
+         fms_never_married, 
+         foreign_born, limited_english) |> 
+  mutate(geo_id = paste0(0, geo_id), birthing_rate = 100*birthing_rate)
+
+# Get 2016 California census tracts
+ca_tracts = tracts(state = "CA", cb = TRUE, year = 2015) |> 
+  left_join(enviro, by = c("GEOID" = "geo_id")) |> 
+  suppressMessages()
+
+# Remove NA values
+tracts = drop_na(ca_tracts)
+la_tracts = filter(tracts, california_county == "Los Angeles",
+                   !city %in% c("Avalon", "El Segundo"))
+
+# California and LA County Maps for background in Plots
+ca.map = map_data("state") |> filter(region == "california")
+
+dim(la_tracts)
+```
+
+## **Summary Table**
+```{r}
+# Summary Table
+sum.table = la_tracts |>
+  as_tibble() |> 
+  select(low_birth_weight, drinking_water, birthing_rate, avg_birthing_age,
+         female_employment_rate, unemployment_rate, health_insurance_coverage,
+         poverty_rate_all, residence_over_1y, edu_hs, fms_never_married, 
+         foreign_born, limited_english)
+
+sum.vars = c("low_birth_weight", "drinking_water", "total_birth_pop", "total_birth_count", "birthing_rate", "avg_birthing_age", "female_employment_rate", "unemployment_rate", "health_insurance_coverage", "poverty_rate_families", "poverty_rate_all", "residence_over_1y", "edu_less_than_hs", "edu_some_hs", "edu_hs", "edu_some_college", "edu_associate", "edu_bachelors", "edu_grad_prof", "fms_never_married", "foreign_born", "limited_english")
+
+sum.names = c("Low Birth Weight (%)", "Drinking Water Contaminant Indicator", "Birthing Population", "Birth Count", "Birthing Rate (%)", "Average Birthing Age", "Female Employment Rate (%)", "Unemployment Rate (%)", "Health Insurance Coverage (%)", "Poverty Rate (% of Families)", "Poverty Rate (%)", "Residential Stability (%)", "Less than HS (%)", "Some HS (%)", "HS Diploma (%)", "Some College (%)", "Associates Degree (%)", "Bachelors Degree (%)", "Graduate/Professional Degree (%)", "Unmarried Females (% Females)", "Foreign Born (%)", "Limited English (%)")
+
+summary_table = tibble(
+    #Variable = sum.vars[sum.vars %in% names(sum.table)],
+    Term = sum.names[sum.vars %in% names(sum.table)],
+    Mean = unname(sapply(sum.table, mean)),
+    SD = unname(sapply(sum.table, sd)),
+    Min = unname(sapply(sum.table, min)),
+    Max = unname(sapply(sum.table, max))
+)
+
+summary_table |> knitr::kable()
+
+summary_table_gt = summary_table |>
+  gt() |>
+  fmt_number(columns = c(Mean, SD, Min, Max), decimals = 2) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())) |>
+  tab_header(
+    title = "Table 1. Summary Statistics",
+    subtitle = "Descriptive Statistics for Selected Variables") |>
+  cols_label(
+    Term = "Term",
+    Mean = "Mean",
+    SD = "SD",
+    Min = "Min",
+    Max = "Max") |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center")
+summary_table_gt
+```
+
+
+```{r eval = FALSE}
+gtsave(summary_table_gt, "figures/summary_table.png")
+```
+
+**Variables used:**
+total_birth_pop = "Birthing Population"
+total_birth_count = "Birth Count"
+birthing_rate = "Birthing Rate"
+avg_birthing_age = "Average Birthing Age"
+female_employment_rate = "Female Employment Rate"
+unemployment_rate = "Unemployment Rate"
+health_insurance_coverage = "Health Insurance Coverage (%)"
+poverty_rate_families = "Poverty Rate (Families)"
+poverty_rate_all = "Poverty Rate (All)"
+residence_over_1y = "Residential Stability (%)"
+edu_less_than_hs = "Less than HS (%)"
+edu_some_hs = "Some HS (%)"
+edu_hs = "HS Diploma (%)"
+edu_some_college = "Some College (%)"
+edu_associate = "Associates Degree (%)"
+edu_bachelors = "Bachelors Degree (%)"
+edu_grad_prof = "Graduate/Professional Degree (%)"
+fms_never_married = "Unmarried Females (% Females)"
+foreign_born = "Foreign Born (%)"
+limited_english = "Limited English (%)"
+
+## **Visualizations: EDA**
+
+California
+```{r}
+ggplot(aes(x = low_birth_weight), data = ca_tracts) +
+  geom_histogram(color = "black", fill = "#FFC77B") +
+  labs(
+    title = "Low Birth Weight (2009-2015)",
+    subtitle = "Source: CalEnviro4.0",
+    x = "Low Birth Weight",
+    y = "Count of Census Tracts")
+ggsave("figures/lbw_hist.png", plot = last_plot(), height = 4, width = 6)
+
+ggplot(aes(x = drinking_water), data = ca_tracts) +
+  geom_histogram(color = "black", fill = "#AFDE95") +
+  labs(
+    title = "Drinking Water Contaminant Indicator (2011-2019)",
+    subtitle = "Source: CalEnviro4.0",
+    x = "Drinking Water Contaminant Indicator",
+    y = "Count of Census Tracts")
+ggsave("figures/dwc_hist.png", plot = last_plot(), height = 4, width = 6)
+```
+
+California
+```{r}
+ggplot(aes(x = low_birth_weight), data = la_tracts) +
+  geom_histogram(color = "black", fill = "#FFC77B") +
+  labs(
+    title = "Low Birth Weight in Los Angeles\nCounty (2009-2015)",
+    subtitle = "Source: CalEnviro4.0",
+    x = "Low Birth Weight",
+    y = "Count of Census Tracts")
+
+ggplot(aes(x = drinking_water), data = la_tracts) +
+  geom_histogram(color = "black", fill = "#AFDE95") +
+  labs(
+    title = "Drinking Water Contaminant Indicator\nin Los Angeles County (2011-2019)",
+    subtitle = "Source: CalEnviro4.0",
+    x = "Drinking Water Contaminant Indicator",
+    y = "Count of Census Tracts")
+```
+
+## **Visualizations: Choropleths (California)**
+
+California
+```{r}
+# Outcome: LBW
+ggplot() +
+  geom_polygon(data = ca.map, aes(x = long, y = lat, group = group), 
+               fill = "grey", color = NA, alpha = 0.6) +
+  geom_sf(color = NA, aes(fill = low_birth_weight), data = drop_na(ca_tracts)) +
+  scale_fill_distiller(palette = "Spectral") +
+  labs(
+    title = "Low Birth Weight (2009-2015)",
+    subtitle = "Source: CalEnviro4.0",
+    fill = "Low Birth\nWeight",
+    x = "", y = "")
+
+# Predictor: DWC
+ggplot() +
+  geom_polygon(data = ca.map, aes(x = long, y = lat, group = group), 
+               fill = "grey", color = NA, alpha = 0.6) +
+  geom_sf(color = NA, aes(fill = drinking_water), data = drop_na(ca_tracts)) +
+  scale_fill_distiller(palette = "Spectral") +
+  labs(
+    title = "Drinking Water Contaminant Indicator (2011-2019)",
+    subtitle = "Source: CalEnviro4.0",
+    fill = "Drinking Water\nContaminant Indicator",
+    x = "", y = "")
+```
+
+## **Visualizations: Histograms & Choropleths (LA County)**
+
+Outcome: LBW
+```{r}
+hist.lbw = ggplot(aes(x = low_birth_weight), data = ca_tracts) +
+  geom_histogram(color = "black", fill = "#FFC77B") +
+  labs(
+    # title = "Low Birth Weight (2009-2015)",
+    # subtitle = "Source: CalEnviro4.0",
+    x = "Low Birth Weight",
+    y = "Count of Census Tracts")
+
+chor.lbw = ggplot() +
+  geom_sf(color = NA, aes(fill = low_birth_weight), data = la_tracts) +
+  scale_fill_distiller(palette = "Spectral") +
+  labs(
+    # title = "Low Birth Weight (2009-2015)",
+    # subtitle = "Source: CalEnviro4.0",
+    fill = "Low Birth\nWeight",
+    x = "", y = "") +
+    theme(legend.position = "bottom",
+          legend.box.spacing = unit(0, "cm"),
+          legend.margin = margin(0, 0, 0, 0),
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+  
+# Generate combined plot
+combined.plots.lbw = ggpubr::ggarrange(hist.lbw, chor.lbw) |> 
+  suppressMessages()
+combined.plots.lbw
+
+# # Add title and subtitle
+# ggpubr::annotate_figure(
+#   combined.plots.lbw,
+#   top = ggpubr::text_grob("Low Birth Weight (2009-2015)", 
+#                   color = "black", face = "bold", size = 16),
+#   bottom = ggpubr::text_grob("Data Source: CalEnviroScreen4.0", 
+#                      size = 10, face = "italic")
+# )
+
+ggsave("figures/lbw_combined.png", plot = last_plot(), width = 11.5, height = 6.5, units = "in")
+```
+
+Predictor: DWC
+```{r}
+ca_tracts$drinking_water |> fivenum()
+
+hist.dwc = ggplot(aes(x = drinking_water), data = ca_tracts) +
+  geom_histogram(color = "black", fill = "#AFDE95") +
+  labs(
+    # title = "Drinking Water Contaminant Indicator (2011-2019)",
+    # subtitle = "Source: CalEnviro4.0",
+    x = "Drinking Water Contaminant Indicator",
+    y = "Count of Census Tracts")
+
+chor.dwc = ggplot() +
+  geom_sf(color = NA, aes(fill = drinking_water), data = la_tracts) +
+  scale_fill_distiller(palette = "Spectral") +
+  labs(
+    # title = "Drinking Water Contaminant\nIndicator (2011-2019)",
+    # subtitle = "Source: CalEnviro4.0",
+    fill = "Drinking Water\nContaminant Indicator",
+    x = "", y = "") +
+    theme(legend.position = "bottom",
+          legend.box.spacing = unit(0, "cm"),
+          legend.margin = margin(0, 0, 0, 0),
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+
+# Generate combined plot
+combined.plots.dwc = ggpubr::ggarrange(hist.dwc, chor.dwc) |> 
+  suppressMessages()
+combined.plots.dwc
+
+# # Add title and subtitle
+# ggpubr::annotate_figure(
+#   combined.plots.dwc,
+#   top = ggpubr::text_grob("Drinking Water Contaminant\nIndicator (2011-2019)", 
+#                   color = "black", face = "bold", size = 16),
+#   bottom = ggpubr::text_grob("Data Source: CalEnviroScreen4.0", 
+#                      size = 10, face = "italic")
+# )
+
+ggsave("figures/dwc_combined.png", plot = last_plot(), width = 11.5, height = 6.5, units = "in")
+```
+
+## **Visualizations: Covariate Plots**
+
+Covariate Plots
+```{r eval = FALSE}
+covar.list = c("total_birth_pop", "total_birth_count", "birthing_rate", "avg_birthing_age", "female_employment_rate", "unemployment_rate", "health_insurance_coverage", "poverty_rate_families", "poverty_rate_all", "residence_over_1y", "edu_less_than_hs", "edu_some_hs", "edu_hs", "edu_some_college", "edu_associate", "edu_bachelors", "edu_grad_prof", "fms_never_married", "foreign_born", "limited_english")
+
+covar.meaning.list = c("Birthing Population", "Birth Count", "Birthing Rate", "Average Birthing Age", "Female Employment Rate", "Unemployment Rate", "Health Insurance Coverage (%)", "Poverty Rate (Families)", "Poverty Rate (All)", "Residential Stability (%)", "Less than HS (%)", "Some HS (%)", "HS Diploma (%)", "Some College (%)", "Associates Degree (%)", "Bachelors Degree (%)", "Graduate/Professional Degree (%)", "Unmarried Females (% Females)", "Foreign Born (%)", "Limited English (%)")
+
+# cov.inv.list = c("avg_birthing_age", "female_employment_rate", "health_insurance_coverage", "residence_over_1y", "edu_hs", "edu_some_college", "edu_associate", "edu_bachelors", "edu_grad_prof")
+
+for(i in 1:length(covar.list)){
+  var = covar.list[i]
+  title = covar.meaning.list[i]
+  
+  col_direction = ifelse(var %in% cov.inv.list, -1, 1)
+  
+  hist = ggplot(aes(x = !!sym(var)), data = la_tracts) +
+    geom_histogram(color = "black", fill = "#8ED2BA") + #AFDE95
+    labs(x = title) |> 
+    suppressMessages()
+  
+  chor = ggplot() +
+    geom_sf(color = NA, aes(fill = !!sym(var)), data = la_tracts) +
+    scale_fill_distiller(palette = "YlGnBu", direction = 1) + #Spectral
+    labs(
+      fill = title,
+      x = "", y = "") +
+    theme(legend.position = "bottom",
+          legend.box.spacing = unit(0, "cm"),
+          legend.margin = margin(0, 0, 0, 0),
+          axis.text = element_blank(),
+          axis.ticks = element_blank())
+  
+  ggpubr::ggarrange(hist, chor) |> 
+    suppressMessages()
+  
+  filename = paste0("figures/", var, ".png")
+  ggsave(filename, plot = last_plot(), width = 11.5, height = 6.5, units = "in")
+}
+```
+
+
+drinking_water, low_birth_weight, total_birth_pop, total_birth_count, birthing_rate, avg_birthing_age, female_employment_rate, unemployment_rate, health_insurance_coverage, poverty_rate_families, poverty_rate_all, residence_over_1y, edu_less_than_hs, edu_some_hs, edu_hs, edu_some_college, edu_associate, edu_bachelors, edu_grad_prof, fms_never_married, foreign_born, limited_english
+
+la_tracts |> colnames()
+
+
+
+## **Spatial Dependence: Global Indicator (Moran's I)**
+
+```{r}
+# Create Queen's Neighborhood Matrix
+nb = poly2nb(la_tracts)
+weights = nb2listw(nb, zero.policy = TRUE)
+
+# Troubleshooting Disconnected Sub-graphs
+# la_tracts$subgraph_id = n.comp.nb(nb)$comp.id
+# la_tracts$city[la_tracts$subgraph != 1] |> table()
+
+plot(la_tracts$geometry, col = "lightblue", border = "white",
+     main = "Queen's Neighborhood Matrix")
+plot(nb, la_tracts$geometry, add = T, col = "darkslateblue")
+
+# Scale exposure and outcome data
+la_tracts$lbw_scaled = scale(la_tracts$low_birth_weight)
+la_tracts$dwc_scaled = scale(la_tracts$drinking_water)
+
+# Create Lag
+la_tracts$lbw_lag = lag.listw(weights, la_tracts$lbw_scaled)
+la_tracts$dwc_lag = lag.listw(weights, la_tracts$dwc_scaled)
+
+# Run Moran's I Test
+moran.lbw = moran.test(la_tracts$lbw_scaled, listw = weights)
+moran.dwc = moran.test(la_tracts$dwc_scaled, listw = weights)
+```
+
+Highly Significant Results
+```{r}
+# Print out Results
+cat("Results:\n",
+    "Morans I (LBW)\n",
+    "\tStatistic: ", moran.lbw$estimate[1], "\n",
+    "\tP-value: ", scales::scientific(moran.lbw$p.value), "\n",
+    "Morans I (DWC)\n",
+    "\tStatistic: ", moran.dwc$estimate[1], "\n",
+    "\tP-value: ", scales::scientific(moran.dwc$p.value))
+```
+
+```{r}
+moran.plot(as.vector(la_tracts$lbw_scaled), listw=weights,labels=F, 
+           #xlim=c(-10,10),ylim=c(-3,5),
+           main=paste("Moran Plot for Low Birth Weight\n",
+                      "Moran's I =", round(moran.lbw$estimate[1], 3),
+                      "p-value =", round(moran.lbw$p.value, 3)), 
+           xlab="Scaled Low Birth Weight",ylab="Spatial Lag",pch=19)
+
+moran.plot(as.vector(la_tracts$dwc_scaled), listw=weights,labels=F, 
+           #xlim=c(-10,10),ylim=c(-3,5),
+           main=paste("Moran Plot for Drinking Water Contaminants\n",
+                      "Moran's I =", round(moran.dwc$estimate[1], 3),
+                      "p-value =", round(moran.dwc$p.value, 3)), 
+           xlab="Scaled Drinking Water Contaminant Indicator",ylab="Spatial Lag",pch=19)
+
+```
+
+
+## **Spatial Dependence: Local Indicator (LISA Clusters)**
+
+Get Clusters
+```{r}
+# Get Lisa Clusters for LBW
+lisa.lbw = localmoran(la_tracts$low_birth_weight, listw = weights)
+la_tracts$lisa_p_lbw = lisa.lbw[, "Pr(z != E(Ii))"]
+la_tracts$lisa_clusters_lbw = case_when(
+  lisa.lbw[, "Ii"] > 0 & la_tracts$lbw_scaled > 0 & la_tracts$lisa_p_lbw <= 0.05 ~ "HH",
+  lisa.lbw[, "Ii"] > 0 & la_tracts$lbw_scaled < 0 & la_tracts$lisa_p_lbw <= 0.05 ~ "LL",
+  lisa.lbw[, "Ii"] < 0 & la_tracts$lbw_scaled > 0 & la_tracts$lisa_p_lbw <= 0.05 ~ "HL",
+  lisa.lbw[, "Ii"] < 0 & la_tracts$lbw_scaled < 0 & la_tracts$lisa_p_lbw <= 0.05 ~ "LH",
+  TRUE ~ "Non-Significant")
+
+# Get Lisa Clusters for DWC
+lisa.dwc = localmoran(la_tracts$drinking_water, listw = weights)
+la_tracts$lisa_p_dwc = lisa.dwc[, "Pr(z != E(Ii))"]
+la_tracts$lisa_clusters_dwc = case_when(
+  lisa.dwc[, "Ii"] > 0 & la_tracts$dwc_scaled > 0 & la_tracts$lisa_p_dwc <= 0.05 ~ "HH",
+  lisa.dwc[, "Ii"] > 0 & la_tracts$dwc_scaled < 0 & la_tracts$lisa_p_dwc <= 0.05 ~ "LL",
+  lisa.dwc[, "Ii"] < 0 & la_tracts$dwc_scaled > 0 & la_tracts$lisa_p_dwc <= 0.05 ~ "HL",
+  lisa.dwc[, "Ii"] < 0 & la_tracts$dwc_scaled < 0 & la_tracts$lisa_p_dwc <= 0.05 ~ "LH",
+  TRUE ~ "Non-Significant")
+```
+
+Visualize
+```{r}
+lisa.lbw.plt = ggplot(data = la_tracts) +
+  geom_sf(aes(fill = lisa_clusters_lbw), color = "white", linewidth = 0.1) +
+  scale_fill_manual(values = c("HH" = "red", "LL" = "blue", "HL" = "pink", "LH" = "lightblue", "Non-Significant" = "lightgrey")) +
+  labs(
+    title = "Low Birth Weight Clusters (2009-2015)",
+    subtitle = "Los Angeles County",
+    fill = "LISA Cluster",
+    caption = "HH = High-High, HH = High-Low, LH = Low-High, LL = Low-Low, Non-Significant: p-value > 0.05 ") +
+  theme(axis.text = element_blank(), axis.ticks = element_blank(), legend.position = "bottom")
+lisa.lbw.plt
+ggsave("figures/lbw_lisa.png", plot = lisa.lbw.plt, width = 6, height = 6.5, units = "in")
+
+lisa.dwc.plt = ggplot(data = la_tracts) +
+  geom_sf(aes(fill = lisa_clusters_dwc), color = "white", linewidth = 0.1) +
+  scale_fill_manual(values = c("HH" = "red", "LL" = "blue", "HL" = "pink", "LH" = "lightblue", "Non-Significant" = "lightgrey")) +
+  labs(
+    title = "Drinking Water Contaminant Indicator (2011-2019)",
+    subtitle = "Los Angeles County",
+    fill = "LISA Cluster",
+    caption = "HH = High-High, HH = High-Low, LH = Low-High, LL = Low-Low, Non-Significant: p-value > 0.05 ") +
+  theme(axis.text = element_blank(), axis.ticks = element_blank(), legend.position = "bottom")
+lisa.dwc.plt
+ggsave("figures/dwc_lisa.png", plot = lisa.dwc.plt, width = 6, height = 6.5, units = "in")
+```
+
+Visualize
+```{r}
+# Temporary dataset
+temp = la_tracts |> 
+  pivot_longer(
+    cols = c(lisa_clusters_lbw, lisa_clusters_dwc),
+    names_to = "val",
+    values_to = "cluster"
+  ) |> 
+  mutate(val = case_match(val,
+                          "lisa_clusters_lbw" ~ "Low Birth Weight",
+                          "lisa_clusters_dwc" ~ "Drinking Water Contaminants"))
+
+ggplot(data = temp) +
+  geom_sf(aes(fill = cluster), color = "white", linewidth = 0.1) +
+  scale_fill_manual(values = c("HH" = "red", "LL" = "blue", "HL" = "pink", "LH" = "lightblue", "Non-Significant" = "lightgrey")) +
+  facet_wrap(~ val) +
+  labs(
+    fill = "LISA Cluster",
+    caption = "HH = High-High, HH = High-Low, LH = Low-High, LL = Low-Low, Non-Significant: p-value > 0.05 ") +
+  theme(axis.text = element_blank(), axis.ticks = element_blank())
+```
+
+## **Spatial Regression: LA County**
+
+Without Covariates
+```{r}
+reg.formula.nocovar = "low_birth_weight ~ drinking_water"
+ols.fit1 = lm(reg.formula.nocovar, data = as.data.frame(la_tracts))
+ols.fit1 |> 
+  broom::tidy() |> 
+  arrange(term != "(Intercept)", term != "drinking_water", p.value)
+```
+
+With Covariates
+```{r}
+covar.list = c("birthing_rate", "avg_birthing_age", "female_employment_rate", "unemployment_rate", "health_insurance_coverage", "poverty_rate_all", "residence_over_1y", "edu_hs", "fms_never_married", "foreign_born", "limited_english")
+
+reg.formula = paste0("low_birth_weight ~ drinking_water + ", paste0(covar.list, collapse = " + ")) |> as.formula()
+
+ols.fit = lm(reg.formula, data = as.data.frame(la_tracts))
+ols.fit |> 
+  broom::tidy() |> 
+  arrange(term != "(Intercept)", term != "drinking_water", p.value)
+```
+
+Regress DWC against covariates
+```{r}
+reg.formula.dwc = paste0("drinking_water ~ ", paste0(covar.list, collapse = " + ")) |> as.formula()
+
+ols.fit.dwc = lm(reg.formula, data = as.data.frame(la_tracts))
+ols.fit.dwc |> 
+  broom::tidy() |> 
+  arrange(term != "(Intercept)", term != "drinking_water", p.value)
+```
+
+```{r}
+# Run Lagrange Multiplier tests to identify spatial regression model
+lagrange = lm.RStests(ols.fit, weights, test = c("LMerr","RLMerr","LMlag","RLMlag","SARMA"))
+print(lagrange)
+```
+
+Run Spatial Models and Compare
+```{r}
+lag.fit = spatialreg::lagsarlm(reg.formula, weights, data = la_tracts, tol.solve = 1.0e-15)
+err.fit = spatialreg::errorsarlm(reg.formula, weights, data = la_tracts, tol.solve = 1.0e-15)
+sar.fit = spatialreg::lagsarlm(reg.formula, weights, data = la_tracts, tol.solve = 1.0e-15, type = "mixed")
+```
+
+Summary Table
+```{r}
+# Print
+cat(
+  "Comparing Models:\n",
+  "Basic Linear Model AIC: ", AIC(ols.fit), "\n",
+  "Lag Spatial Model AIC: ", AIC(lag.fit), "\n",
+  "Error Spatial Model AIC: ", AIC(err.fit), "\n",
+  "Mixed Spatial Model AIC: ", AIC(sar.fit)
+  )
+
+# GT Table
+# Create a data frame with model names and AICs
+aic_table = tibble::tibble(
+  Model = c("Basic Linear Model", "Spatial Lag Model", "Spatial Error Model", "SARMA Model"),
+  AIC = c(AIC(ols.fit), AIC(lag.fit), AIC(err.fit), AIC(sar.fit))
+)
+
+# Format the table
+aic_gt = aic_table |>
+  mutate(AIC = round(AIC, 2)) |>
+  gt() |>
+  tab_header(
+    title = "Table 2. Model Comparison",
+    subtitle = "Akaike Information Criterion (AIC) for Each Model"
+  ) |>
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = list(
+      cells_column_labels(everything())
+    )
+  ) |>
+  cols_label(
+    Model = "Model Type",
+    AIC = "AIC Value"
+  ) |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center"
+  )
+aic_gt
+```
+
+```{r eval = FALSE}
+gtsave(aic_gt, "figures/aic_table.png")
+```
+
+```{r}
+dwc.effect.summary = 
+  ols.fit |> 
+  broom::tidy() |> 
+  arrange(!term %in% c("rho", "(Intercept)", "drinking_water"), p.value) |> 
+  select(term, estimate, p.value) |> 
+  mutate(model = "Basic Linear Model") |> 
+  filter(term == "drinking_water") |> 
+  rbind(
+    lag.fit |> 
+      broom::tidy() |> 
+      arrange(!term %in% c("rho", "(Intercept)", "drinking_water"), p.value) |> 
+      select(term, estimate, p.value) |> 
+      mutate(model = "Spatial Lag Model") |> 
+      filter(term == "drinking_water")
+  ) |> 
+  rbind(
+    err.fit |> 
+      broom::tidy() |> 
+      arrange(!term %in% c("rho", "(Intercept)", "drinking_water"), p.value) |> 
+      select(term, estimate, p.value) |> 
+      mutate(model = "Spatial Error Model") |> 
+      filter(term == "drinking_water")
+  ) |> 
+  rbind(
+    sar.fit |> 
+      broom::tidy() |> 
+      arrange(!term %in% c("rho", "(Intercept)", "drinking_water"), p.value) |> 
+      select(term, estimate, p.value) |> 
+      mutate(model = "SARMA Model") |> 
+      filter(term == "drinking_water")
+  ) |> 
+  mutate(
+    sig = case_when(
+      p.value < 0.01 ~ "Highly significant (P-value < 0.01)",
+      p.value < 0.05 ~ "Significant (P-value < 0.05)",
+      p.value < 0.1 ~ "Moderate significance (P-value < 0.10)",
+      p.value < 0.15 ~ "Low significance (P-value < 0.15)",
+      TRUE ~ "Not significant")
+  ) |> 
+  select(model, estimate, p.value, sig)
+dwc.effect.summary
+
+dwc_summary_gt = dwc.effect.summary |>
+  mutate(p.value = round(p.value, 5),
+         estimate = round(estimate, 5)) |>
+  gt() |>
+  # Bold column headers and variable names
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = list(
+      cells_column_labels(everything()))) |>
+  # Format and relabel columns
+  cols_label(
+    model = "Model",
+    estimate = "Effect Estimate",
+    p.value = "P-value",
+    sig = "Significance"
+  ) |>
+  tab_header(
+    title = "Table 3. Effect of Drinking Water Contaminant Indicator on Low Birth Weight",
+    subtitle = "Coefficient estimates and significance from four regression models") |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center")
+
+dwc_summary_gt
+```
+
+
+```{r}
+gtsave(dwc_summary_gt, "figures/dwc_summary_table.png")
+```
+
+
+Generate Model Summary Table
+```{r}
+sar_summary = sar.fit |> 
+  broom::tidy() |> 
+  arrange(!term %in% c("rho", "(Intercept)", "drinking_water"), p.value) |> 
+  mutate(ci = paste0("(", round(estimate-1.96*std.error, 4),
+                     ", ", round(estimate+1.96*std.error, 4), ")")) |> 
+  select(term, estimate, p.value, ci) |> 
+  mutate(
+    sig = case_when(
+      p.value < 0.01 ~ "Highly significant (P-value < 0.01)",
+      p.value < 0.05 ~ "Significant (P-value < 0.05)",
+      p.value < 0.1 ~ "Moderate significance (P-value < 0.10)",
+      p.value < 0.15 ~ "Low significance (P-value < 0.15)",
+      TRUE ~ "Not significant"),
+    var_desc = case_when(
+      term == "rho" ~ "Spatial Autoregressive Coefficient (ρ)",
+      str_detect(term, "low_birth_weight") ~ "Low Birth Weight (%)",
+      str_detect(term, "drinking_water") ~ "Drinking Water Contaminant Indicator",
+      str_detect(term, "total_birth_pop") ~ "Birthing Population",
+      str_detect(term, "total_birth_count") ~ "Birth Count",
+      str_detect(term, "birthing_rate") ~ "Birthing Rate (%)",
+      str_detect(term, "avg_birthing_age") ~ "Average Birthing Age",
+      str_detect(term, "female_employment_rate") ~ "Female Employment Rate (%)",
+      str_detect(term, "unemployment_rate") ~ "Unemployment Rate (%)",
+      str_detect(term, "health_insurance_coverage") ~ "Health Insurance Coverage (%)",
+      str_detect(term, "poverty_rate_families") ~ "Poverty Rate (Families)",
+      str_detect(term, "poverty_rate_all") ~ "Poverty Rate (%)",
+      str_detect(term, "residence_over_1y") ~ "Residential Stability (%)",
+      str_detect(term, "edu_less_than_hs") ~ "Less than HS (%)",
+      str_detect(term, "edu_some_hs") ~ "Some HS (%)",
+      str_detect(term, "edu_hs") ~ "HS Diploma (%)",
+      str_detect(term, "edu_some_college") ~ "Some College (%)",
+      str_detect(term, "edu_associate") ~ "Associates Degree (%)",
+      str_detect(term, "edu_bachelors") ~ "Bachelors Degree (%)",
+      str_detect(term, "edu_grad_prof") ~ "Graduate/Professional Degree (%)",
+      str_detect(term, "fms_never_married") ~ "Unmarried Females (% Females)",
+      str_detect(term, "foreign_born") ~ "Foreign Born (%)",
+      str_detect(term, "limited_english") ~ "Limited English (%)"),
+    is_lag = ifelse(str_detect(term, "lag"), "Lagged", ""),
+    var_title = paste(is_lag, var_desc)) |> 
+  drop_na() |> 
+  select(var_title, estimate, ci, p.value, sig)
+
+sar_summary_gt = sar_summary |>
+  mutate(p.value = round(p.value, 3),
+         estimate = round(estimate, 3)) |>
+  gt() |>
+  # Bold column headers and variable names
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = list(
+      cells_column_labels(everything()))) |>
+  # Format and relabel columns
+  cols_label(
+    var_title = "Variable",
+    estimate = "Effect Estimate",
+    ci = "95% CI",
+    p.value = "P-value",
+    sig = "Significance"
+  ) |>
+  tab_header(
+    title = "Table A.1. SARMA Model Results",
+    subtitle = "Coefficients, Confidence Intervals (CI), and P-values") |>
+  tab_options(
+    table.font.size = "small",
+    heading.align = "center")
+sar_summary_gt
+```
+
+```{r eval = FALSE}
+gtsave(sar_summary_gt, "figures/sar_summary_table.png")
+```
+
+## **Linear Regression: Statewide**
+CA Tracts
+Without Covariates
+```{r}
+reg.formula.nocovar = "low_birth_weight ~ drinking_water"
+ols.fit.ca.nocovar = lm(reg.formula.nocovar, data = as.data.frame(ca_tracts))
+ols.fit.ca.nocovar |> 
+  broom::tidy() |> 
+  arrange(term != "(Intercept)", term != "drinking_water", p.value)
+```
+
+With Covariates
+```{r}
+reg.formula.ca = paste0("low_birth_weight ~ drinking_water + ", paste0(covar.list, collapse = " + ")) |> as.formula()
+
+ols.fit.ca = lm(reg.formula, data = as.data.frame(ca_tracts))
+ols.fit.ca |> 
+  broom::tidy() |> 
+  arrange(term != "(Intercept)", term != "drinking_water", p.value)
+```
+
+Regress DWC against covariates
+```{r}
+reg.formula.ca.dwc = paste0("drinking_water ~ ", paste0(covar.list, collapse = " + ")) |> as.formula()
+
+ols.fit.ca.dwc = lm(reg.formula, data = as.data.frame(ca_tracts))
+ols.fit.ca.dwc |> 
+  broom::tidy() |> 
+  arrange(term != "(Intercept)", term != "drinking_water", p.value)
+```
+
+## **Other Code**
+
+For GWR or Regression
+```{r}
+# Get coordinates
+# tracts.spdf = as_tibble(tracts)
+# coordinates(tracts.spdf) = ~longitude+latitude
+# proj4string(tracts.spdf) = CRS(st_crs(tracts)$wkt)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
